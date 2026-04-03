@@ -7,16 +7,13 @@ import android.media.AudioTrack;
 import android.media.AudioAttributes;
 import android.os.Handler;
 import android.os.Looper;
-import android.os.SystemClock;
 
 import androidx.annotation.NonNull;
 
 import java.util.Map;
 import java.util.HashMap;
-import java.util.List;
-import java.util.ArrayList;
 import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import java.io.StringWriter;
 import java.io.PrintWriter;
 import java.nio.ByteBuffer;
@@ -35,7 +32,7 @@ public class FlutterPcmSoundPlugin implements
     MethodChannel.MethodCallHandler
 {
     private static final String CHANNEL_NAME = "flutter_pcm_sound/methods";
-    private static final int MAX_FRAMES_PER_BUFFER = 200;
+    private static final int MAX_BYTES_PER_BUFFER = 4096;
 
     private MethodChannel mMethodChannel;
     private Handler mainThreadHandler = new Handler(Looper.getMainLooper());
@@ -47,8 +44,9 @@ public class FlutterPcmSoundPlugin implements
     private int mMinBufferSize;
     private boolean mDidSetup = false;
 
-    private long mFeedThreshold = 8000;
-    private long mTotalFeeds = 0;
+    private final AtomicLong mFeedThreshold = new AtomicLong(8000);
+    private final AtomicLong mTotalFeeds = new AtomicLong(0);
+    private final AtomicLong mQueuedBytes = new AtomicLong(0);
     private long mLastLowBufferFeed = 0;
     private long mLastZeroFeed = 0;
 
@@ -141,6 +139,10 @@ public class FlutterPcmSoundPlugin implements
 
                     // reset
                     mSamples.clear();
+                    mQueuedBytes.set(0);
+                    mTotalFeeds.set(0);
+                    mLastLowBufferFeed = 0;
+                    mLastZeroFeed = 0;
                     mShouldCleanup = false;
 
                     // start playback thread
@@ -162,28 +164,25 @@ public class FlutterPcmSoundPlugin implements
                     }
 
                     byte[] buffer = call.argument("buffer");
-
-                    // Split for better performance
-                    List<ByteBuffer> chunks = split(buffer, MAX_FRAMES_PER_BUFFER);
-
-                    // Push samples
-                    synchronized (mSamples) {
-                        for (ByteBuffer chunk : chunks) {
-                            mSamples.add(chunk);
-                        }
-                        mTotalFeeds += 1;
+                    if (buffer == null || buffer.length == 0) {
+                        result.success(true);
+                        break;
                     }
+
+                    for (int offset = 0; offset < buffer.length; offset += MAX_BYTES_PER_BUFFER) {
+                        int length = Math.min(buffer.length - offset, MAX_BYTES_PER_BUFFER);
+                        ByteBuffer chunk = ByteBuffer.wrap(buffer, offset, length);
+                        mSamples.add(chunk);
+                        mQueuedBytes.addAndGet(length);
+                    }
+                    mTotalFeeds.incrementAndGet();
 
                     result.success(true);
                     break;
                 }
                 case "setFeedThreshold": {
                     long feedThreshold = ((Number) call.argument("feed_threshold")).longValue();
-
-                    synchronized (mSamples) {
-                        mFeedThreshold = feedThreshold;
-                    }
-
+                    mFeedThreshold.set(feedThreshold);
                     result.success(true);
                     break;
                 }
@@ -224,6 +223,9 @@ public class FlutterPcmSoundPlugin implements
             playbackThread = null;
             mDidSetup = false;
         }
+
+        mSamples.clear();
+        mQueuedBytes.set(0);
     }
 
     /**
@@ -253,23 +255,15 @@ public class FlutterPcmSoundPlugin implements
                 continue;
             }
 
+            int bytesToWrite = data.remaining();
+            mQueuedBytes.addAndGet(-bytesToWrite);
+
             // write
-            mAudioTrack.write(data, data.remaining(), AudioTrack.WRITE_BLOCKING);
+            mAudioTrack.write(data, bytesToWrite, AudioTrack.WRITE_BLOCKING);
 
-            long remainingFrames;
-            long totalFeeds;
-            long feedThreshold;
-
-            // grab shared data
-            synchronized (mSamples) {
-                long totalBytes = 0;
-                for (ByteBuffer sampleBuffer : mSamples) {
-                    totalBytes += sampleBuffer.remaining();
-                }
-                remainingFrames = totalBytes / (2 * mNumChannels);
-                totalFeeds = mTotalFeeds;
-                feedThreshold = mFeedThreshold;
-            }
+            long remainingFrames = mQueuedBytes.get() / (2L * mNumChannels);
+            long totalFeeds = mTotalFeeds.get();
+            long feedThreshold = mFeedThreshold.get();
 
             // check for events
             boolean isLowBufferEvent = (remainingFrames <= feedThreshold) && (mLastLowBufferFeed != totalFeeds);
@@ -287,18 +281,5 @@ public class FlutterPcmSoundPlugin implements
         mAudioTrack.flush();
         mAudioTrack.release();
         mAudioTrack = null;
-    }
-
-
-    private List<ByteBuffer> split(byte[] buffer, int maxSize) {
-        List<ByteBuffer> chunks = new ArrayList<>();
-        int offset = 0;
-        while (offset < buffer.length) {
-            int length = Math.min(buffer.length - offset, maxSize);
-            ByteBuffer b = ByteBuffer.wrap(buffer, offset, length);
-            chunks.add(b);
-            offset += length;
-        }
-        return chunks;
     }
 }
