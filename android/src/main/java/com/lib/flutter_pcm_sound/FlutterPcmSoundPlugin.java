@@ -88,6 +88,13 @@ public class FlutterPcmSoundPlugin implements
                 case "setup": {
                     int sampleRate = call.argument("sample_rate");
                     mNumChannels = call.argument("num_channels");
+                    String androidAudioUsage = call.argument("android_audio_usage");
+                    String androidAudioContentType = call.argument("android_audio_content_type");
+                    String androidLegacyStreamType = call.argument("android_legacy_stream_type");
+
+                    int audioUsage = resolveAudioUsage(androidAudioUsage);
+                    int contentType = resolveAudioContentType(androidAudioContentType);
+                    int legacyStreamType = resolveLegacyStreamType(androidLegacyStreamType);
 
                     // Cleanup existing resources if any
                     if (mAudioTrack != null) {
@@ -109,8 +116,8 @@ public class FlutterPcmSoundPlugin implements
                     if (Build.VERSION.SDK_INT >= 23) { // Android 6 (Marshmallow) and above
                         mAudioTrack = new AudioTrack.Builder()
                             .setAudioAttributes(new AudioAttributes.Builder()
-                                    .setUsage(AudioAttributes.USAGE_MEDIA)
-                                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                                    .setUsage(audioUsage)
+                                    .setContentType(contentType)
                                     .build())
                             .setAudioFormat(new AudioFormat.Builder()
                                     .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
@@ -122,7 +129,7 @@ public class FlutterPcmSoundPlugin implements
                             .build();
                     } else {
                         mAudioTrack = new AudioTrack(
-                            AudioManager.STREAM_MUSIC,
+                            legacyStreamType,
                             sampleRate,
                             channelConfig,
                             AudioFormat.ENCODING_PCM_16BIT,
@@ -281,5 +288,55 @@ public class FlutterPcmSoundPlugin implements
         mAudioTrack.flush();
         mAudioTrack.release();
         mAudioTrack = null;
+    }
+
+    private int resolveAudioUsage(String value) {
+        if (value == null) return AudioAttributes.USAGE_MEDIA;
+        switch (value) {
+            case "unknown":                      return AudioAttributes.USAGE_UNKNOWN;
+            case "voiceCommunication":           return AudioAttributes.USAGE_VOICE_COMMUNICATION;
+            case "voiceCommunicationSignalling": return AudioAttributes.USAGE_VOICE_COMMUNICATION_SIGNALLING;
+            case "alarm":                        return AudioAttributes.USAGE_ALARM;
+            case "notification":                 return AudioAttributes.USAGE_NOTIFICATION;
+            case "notificationRingtone":         return AudioAttributes.USAGE_NOTIFICATION_RINGTONE;
+            case "notificationEvent":            return AudioAttributes.USAGE_NOTIFICATION_EVENT;
+            case "assistanceAccessibility":      return AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY;
+            case "assistanceNavigationGuidance": return AudioAttributes.USAGE_ASSISTANCE_NAVIGATION_GUIDANCE;
+            case "assistanceSonification":       return AudioAttributes.USAGE_ASSISTANCE_SONIFICATION;
+            case "game":                         return AudioAttributes.USAGE_GAME;
+            case "assistant":                    return AudioAttributes.USAGE_ASSISTANT;
+            case "media":
+            default:                             return AudioAttributes.USAGE_MEDIA;
+        }
+    }
+
+    private int resolveAudioContentType(String value) {
+        if (value == null) return AudioAttributes.CONTENT_TYPE_MUSIC;
+        switch (value) {
+            case "unknown":      return AudioAttributes.CONTENT_TYPE_UNKNOWN;
+            case "speech":       return AudioAttributes.CONTENT_TYPE_SPEECH;
+            case "movie":        return AudioAttributes.CONTENT_TYPE_MOVIE;
+            case "sonification": return AudioAttributes.CONTENT_TYPE_SONIFICATION;
+            case "music":
+            default:             return AudioAttributes.CONTENT_TYPE_MUSIC;
+        }
+    }
+
+    @SuppressWarnings("deprecation")
+    private int resolveLegacyStreamType(String value) {
+        if (value == null) return AudioManager.STREAM_MUSIC;
+        switch (value) {
+            case "voiceCall":    return AudioManager.STREAM_VOICE_CALL;
+            case "system":       return AudioManager.STREAM_SYSTEM;
+            case "ring":         return AudioManager.STREAM_RING;
+            case "alarm":        return AudioManager.STREAM_ALARM;
+            case "notification": return AudioManager.STREAM_NOTIFICATION;
+            case "dtmf":         return AudioManager.STREAM_DTMF;
+            case "accessibility":
+                if (Build.VERSION.SDK_INT >= 26) return AudioManager.STREAM_ACCESSIBILITY;
+                return AudioManager.STREAM_MUSIC;
+            case "music":
+            default:             return AudioManager.STREAM_MUSIC;
+        }
     }
 }
